@@ -1,0 +1,41 @@
+# Environments & caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Experiment tracking / local logs
+codes/wandb/
+wandb/
+*.log
+
+# Archives and downloads (often exceed GitHub 100MB limit)
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+
+# Large multimodal feature matrices & model checkpoints
+*.npy
+data/**/*.pth
+data/**/Trained-Models-Logs/
+data/archive/
+data/BM3*.pth
+data/drive-download*/
+data/data-*/
+
+# Keep small processed Clothing 5-core graphs/splits if under limit
+!data/Clothing/5-core/*.pth
+!data/Clothing/5-core/*.json

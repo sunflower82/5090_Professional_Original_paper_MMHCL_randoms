@@ -11,10 +11,10 @@ This is the Pytorch implementation for our ACM TOMM'2025 paper:[MMHCL: Multi-Mod
 <h2>Dependencies </h2>
 The code has been tested running under Python 3.10.13. All experiments are conducted on an NVIDIA 24GB 3090 GPU. The required packages are as follows:
 
-* [Pytorch](https://pytorch.org/) == 2.0.1+cu118
-* numpy == 1.24.3
-* scipy == 1.10.1
-* [scikit-learn](https://scikit-learn.org/stable/) == 1.2.2
+* [Pytorch](https://pytorch.org/) == 2.2.0+cu118
+* numpy == 1.26.4
+* scipy == 1.16.3
+* [scikit-learn](https://scikit-learn.org/stable/) == 1.6.1
 
 <h2>Datasets</h2>
 
