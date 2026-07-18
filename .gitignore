@@ -36,15 +36,18 @@ data/BM3*.pth
 data/drive-download*/
 data/data-*/
 
-# Keep small processed Clothing 5-core graphs/splits if under limit
+# Keep Clothing interaction splits (features *.npy stay ignored — download from Hugging Face)
 !data/Clothing/5-core/*.pth
 !data/Clothing/5-core/*.json
+!data/Clothing/0-core/*.json
+data/Clothing_hf_download/
+data/Clothing_old_incorrect_backup/
 
 # Security: do not commit notebooks, papers/docs sources, or experimental results
 *.ipynb
 *.pdf
 *.tex
-Clothing/
+/Clothing/
 MMHCL_*Results*
 *Results*.xlsx
 gpu_memory*.csv
