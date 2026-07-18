@@ -39,3 +39,21 @@ data/data-*/
 # Keep small processed Clothing 5-core graphs/splits if under limit
 !data/Clothing/5-core/*.pth
 !data/Clothing/5-core/*.json
+
+# Security: do not commit notebooks, papers/docs sources, or experimental results
+*.ipynb
+*.pdf
+*.tex
+Clothing/
+MMHCL_*Results*
+*Results*.xlsx
+gpu_memory*.csv
+GPU Memory*.csv
+Process_Memory*.csv
+ANALYSIS_RESULTS*
+TRAINING_STATUS*
+WANDB_ANALYSIS*
+HYPERPARAMETER_UPDATES*
+WHERE_CHANGES*
+WANDB_INTEGRATION*
+log/Training_Curves.*
