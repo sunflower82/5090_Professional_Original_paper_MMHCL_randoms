@@ -2,21 +2,24 @@
 
 Runs the stock MMHCL training loop (main.py) with three additions:
 
-  1. Per improved-epoch, computes Recall@20 restricted to items in the
-     Head / Mid / Tail popularity tercile (by training frequency).
-  2. Injects these three values into every wandb.log(...) call that
-     already carries 'test/recall@20', so they appear as time-series
-     curves in the WandB UI.
-  3. On wandb.finish(...), writes Best_Recall@20 Head/Mid/Tail into
-     the run summary -- these are the tercile recalls at the SAME
-     checkpoint whose best_test_recall@20 is already reported by main.py
-     (i.e., last improved epoch under early-stopping-restore-best=1).
+  1. On every validation evaluation, computes Recall@20 restricted to
+     items in the Head / Mid / Tail popularity tercile (by training frequency).
+  2. Whenever validation improves under the same rule as main.py's early
+     stopping, snapshots those tercile recalls as the running best
+     (independent of WandB).
+  3. When main.py logs the improved-checkpoint metrics (``best_recall`` /
+     ``best_ndcg``), also logs:
+         best_recall@20_Head
+         best_recall@20_Mid
+         best_recall@20_Tail
+     and writes the same three values into the WandB run summary.
 
 Usage (drop-in for main.py):
     python main_tercile.py --dataset Clothing --seed <s> [ ... ]
 """
 from __future__ import annotations
 
+import math
 import os
 import numpy as np
 import torch
@@ -56,6 +59,7 @@ def compute_tercile_recall(
     ua: torch.Tensor,
     ia: torch.Tensor,
     users_to_test: list[int],
+    ground_truth: dict[int, list[int]],
     K: int = 20,
 ) -> dict[str, float]:
     """Recall@K restricted to each popularity tercile.
@@ -77,12 +81,12 @@ def compute_tercile_recall(
             scores = rate[row].copy()
             for ti in data_generator.train_items.get(u, []):
                 scores[ti] = -1e9                     # exclude trained items
-            ground = data_generator.test_set.get(u, [])
+            ground = ground_truth.get(u, [])
             if not ground:
                 continue
             top = np.argpartition(-scores, K)[:K]
             top = top[np.argsort(-scores[top])].tolist()
-            gset = set(ground)
+            gset = set(int(x) for x in ground)
             for tercile, out in (
                 (HEAD_IDS, head_scores),
                 (MID_IDS,  mid_scores),
@@ -92,37 +96,74 @@ def compute_tercile_recall(
                 if not gt_in_tercile:
                     continue
                 hits = sum(
-                    1 for it in top if it in tercile and it in gt_in_tercile
+                    1 for it in top if int(it) in tercile and int(it) in gt_in_tercile
                 )
                 out.append(hits / len(gt_in_tercile))
     _m = lambda xs: float(np.mean(xs)) if xs else float("nan")
     return {"head": _m(head_scores), "mid": _m(mid_scores), "tail": _m(tail_scores)}
 
 
-# --- 4. Monkey-patch Trainer.test to also stash the tercile snapshot ------
+# --- 4. Monkey-patch Trainer.test to stash validation terciles ------------
 _orig_test = main.Trainer.test
-_last_improved_tercile: dict[str, float] = {"head": float("nan"),
-                                             "mid":  float("nan"),
-                                             "tail": float("nan")}
-_have_improved = [False]
+
+# Most recent validation-tercile snapshot (updated every val eval epoch).
+_last_val_tercile: dict[str, float] = {
+    "head": float("nan"),
+    "mid": float("nan"),
+    "tail": float("nan"),
+}
+# Snapshot at the same checkpoint that updates best_recall / best_ndcg.
+# Updated here (mirroring main.py early-stopping), NOT only via wandb.log.
+_best_val_tercile: dict[str, float] = {
+    "head": float("nan"),
+    "mid": float("nan"),
+    "tail": float("nan"),
+}
+_best_monitor: dict[str, float] = {"recall": 0.0, "ndcg": 0.0}
+_have_val_tercile = [False]
 
 
 def _test_with_terciles(self, users_to_test, is_val):
     result = _orig_test(self, users_to_test, is_val)
-    if not is_val:  # test-set evaluation triggered by improvement in val
+    if is_val:
         self.model.eval()
         with torch.no_grad():
             ua, ia, _ii, _uu = self.model(
                 self.UI_mat, self.Item_mat, self.User_mat
             )
-        ter = compute_tercile_recall(ua, ia, users_to_test)
-        _last_improved_tercile.update(ter)
-        _have_improved[0] = True
-        print(
-            f"[tercile] test @ improved epoch: "
-            f"head={ter['head']:.6f} mid={ter['mid']:.6f} tail={ter['tail']:.6f}",
-            flush=True,
+        ter = compute_tercile_recall(
+            ua, ia, users_to_test, data_generator.val_set
         )
+        _last_val_tercile.update(ter)
+        _have_val_tercile[0] = True
+
+        # Mirror main.py early-stopping "improved" rule so best Head/Mid/Tail
+        # are recorded even when WandB is disabled or wandb.log is skipped.
+        rec = float(result["recall"][1])
+        ndcg = float(result["ndcg"][1])
+        min_delta = float(args.early_stopping_min_delta)
+        improved = (
+            rec > _best_monitor["recall"] + min_delta
+            or ndcg > _best_monitor["ndcg"] + min_delta
+        )
+        if improved:
+            if rec > _best_monitor["recall"]:
+                _best_monitor["recall"] = rec
+            if ndcg > _best_monitor["ndcg"]:
+                _best_monitor["ndcg"] = ndcg
+            _best_val_tercile.update(ter)
+            print(
+                f"[tercile] val@best: "
+                f"head={ter['head']:.6f} mid={ter['mid']:.6f} tail={ter['tail']:.6f} "
+                f"(val_recall@20={rec:.6f})",
+                flush=True,
+            )
+        else:
+            print(
+                f"[tercile] val: "
+                f"head={ter['head']:.6f} mid={ter['mid']:.6f} tail={ter['tail']:.6f}",
+                flush=True,
+            )
     return result
 
 
@@ -133,11 +174,21 @@ if args.use_wandb and wandb is not None:
     _orig_log = wandb.log
 
     def _patched_log(d, *a, **kw):
-        if isinstance(d, dict) and "test/recall@20" in d and _have_improved[0]:
+        if isinstance(d, dict) and _have_val_tercile[0]:
             d = dict(d)
-            d["Recall@20 Head"] = _last_improved_tercile["head"]
-            d["Recall@20 Mid"]  = _last_improved_tercile["mid"]
-            d["Recall@20 Tail"] = _last_improved_tercile["tail"]
+            if "val/recall@20" in d:
+                d["val/recall@20_Head"] = _last_val_tercile["head"]
+                d["val/recall@20_Mid"] = _last_val_tercile["mid"]
+                d["val/recall@20_Tail"] = _last_val_tercile["tail"]
+            if "best_recall" in d:
+                # Prefer the already-snapshotted best; fall back to last val.
+                src = _best_val_tercile
+                if math.isnan(src["head"]):
+                    src = _last_val_tercile
+                    _best_val_tercile.update(src)
+                d["best_recall@20_Head"] = src["head"]
+                d["best_recall@20_Mid"] = src["mid"]
+                d["best_recall@20_Tail"] = src["tail"]
         return _orig_log(d, *a, **kw)
 
     wandb.log = _patched_log
@@ -146,15 +197,26 @@ if args.use_wandb and wandb is not None:
 
     def _patched_finish(*a, **kw):
         try:
-            if _have_improved[0] and wandb.run is not None:
-                wandb.summary["Best_Recall@20 Head"] = _last_improved_tercile["head"]
-                wandb.summary["Best_Recall@20 Mid"]  = _last_improved_tercile["mid"]
-                wandb.summary["Best_Recall@20 Tail"] = _last_improved_tercile["tail"]
+            if _have_val_tercile[0] and wandb.run is not None:
+                src = _best_val_tercile
+                if math.isnan(src["head"]):
+                    src = _last_val_tercile
+                wandb.summary["best_recall@20_Head"] = src["head"]
+                wandb.summary["best_recall@20_Mid"] = src["mid"]
+                wandb.summary["best_recall@20_Tail"] = src["tail"]
         except Exception as _e:
             print(f"[tercile] wandb-summary write skipped: {_e}", flush=True)
         return _orig_finish(*a, **kw)
 
     wandb.finish = _patched_finish
+
+
+def _fmt(x: float) -> str:
+    """Format floats for the notebook regex (never emit bare 'nan')."""
+    if x is None or (isinstance(x, float) and math.isnan(x)):
+        return "nan"
+    return f"{float(x):.8f}"
+
 
 # --- 6. Replicate main.py's __main__ block exactly ------------------------
 if __name__ == "__main__":
@@ -176,13 +238,15 @@ if __name__ == "__main__":
     trainer = main.Trainer(data_config=config)
     trainer.train()
 
-    # After training + wandb.finish, also emit the tercile summary to stdout
-    # so the notebook parser (below) can pick it up even if the WandB API
-    # call is rate-limited.
+    final = dict(_best_val_tercile)
+    if math.isnan(final["head"]) and _have_val_tercile[0]:
+        final = dict(_last_val_tercile)
+
+    # Notebook parser reads this line; keep the key format stable.
     print(
         "[tercile-final] "
-        f"BEST_Recall@20_Head={_last_improved_tercile['head']:.8f} "
-        f"BEST_Recall@20_Mid={_last_improved_tercile['mid']:.8f} "
-        f"BEST_Recall@20_Tail={_last_improved_tercile['tail']:.8f}",
+        f"BEST_Recall@20_Head={_fmt(final['head'])} "
+        f"BEST_Recall@20_Mid={_fmt(final['mid'])} "
+        f"BEST_Recall@20_Tail={_fmt(final['tail'])}",
         flush=True,
     )

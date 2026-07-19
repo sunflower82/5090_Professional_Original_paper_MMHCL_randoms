@@ -45,9 +45,12 @@ data/Clothing_old_incorrect_backup/
 
 # Security: do not commit notebooks, papers/docs sources, or experimental results
 *.ipynb
+# Keep the local Clothing training notebook (contains RQ4 tercile runner)
+!Local_Random_seeds_train_mmhcl_clothing_colab_original.ipynb
 *.pdf
 *.tex
 /Clothing/
+codes/results/
 MMHCL_*Results*
 *Results*.xlsx
 gpu_memory*.csv
